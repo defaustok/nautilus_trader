@@ -22,7 +22,7 @@ use std::sync::{
 
 use nautilus_network::{
     RECONNECTED,
-    websocket::{AuthTracker, SubscriptionState, WebSocketClient},
+    websocket::{AuthTracker, SubscriptionState, WebSocketClient, auth::AuthState},
 };
 use serde_json::value::RawValue;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender}; // tokio-import-ok
@@ -205,10 +205,12 @@ impl FeedHandler {
 
     async fn send_subscribe_user(&self) {
         let Some(ref client) = self.client else {
+            self.auth_tracker.fail("WebSocket client unavailable");
             log::warn!("No client available for user subscribe");
             return;
         };
         let Some(cred) = &self.credential else {
+            self.auth_tracker.fail("Credential unavailable");
             log::error!("User channel subscribe requires credential");
             return;
         };
@@ -229,13 +231,19 @@ impl FeedHandler {
 
         match serde_json::to_string(&req) {
             Ok(payload) => {
-                // auth_tracker.succeed() is NOT called here; sending the request only
-                // confirms delivery to the server, not that the credentials were accepted.
-                // succeed() is called in next() when the server actually sends user-channel
-                // data, which is the real confirmation that authentication worked.
-                if let Err(e) = client.send_text(payload, None).await {
+                let connection_epoch = client.connection_epoch();
+                if let Err(e) = client
+                    .send_text_on_connection(payload, None, connection_epoch)
+                    .await
+                {
                     self.auth_tracker.fail(e.to_string());
                     log::error!("Failed to send user subscribe: {e}");
+                } else if let Err(e) = client
+                    .send_text_on_connection("PING".to_string(), None, connection_epoch)
+                    .await
+                {
+                    self.auth_tracker.fail(e.to_string());
+                    log::error!("Failed to send user authentication liveness probe: {e}");
                 }
             }
             Err(e) => {
@@ -325,6 +333,41 @@ impl FeedHandler {
         }
     }
 
+    fn user_auth_error(text: &str) -> Option<String> {
+        let json_error = serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|value| value.get("error").cloned())
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_str()
+                    .map_or_else(|| value.to_string(), str::to_string)
+            });
+        if let Some(e) = json_error {
+            return Some(sanitize_error_text(&e));
+        }
+
+        let normalized = text.trim().to_ascii_lowercase();
+        let identifies_auth = normalized.contains("auth")
+            || normalized.contains("unauthor")
+            || normalized.contains("api key")
+            || normalized.contains("credential");
+        let identifies_failure = normalized.contains("invalid")
+            || normalized.contains("failed")
+            || normalized.contains("error")
+            || normalized.contains("unauthor");
+        (identifies_auth && identifies_failure).then(|| sanitize_error_text(text))
+    }
+
+    fn confirm_user_authentication(&self) {
+        if self.channel == WsChannel::User
+            && self.user_subscribed
+            && self.auth_tracker.auth_state() == AuthState::Unauthenticated
+        {
+            self.auth_tracker.succeed();
+        }
+    }
+
     pub(super) async fn next(&mut self) -> Option<PolymarketWsMessage> {
         if !self.message_buffer.is_empty() {
             return Some(self.message_buffer.remove(0));
@@ -381,6 +424,20 @@ impl FeedHandler {
                                 self.resubscribe_all(connection_epoch).await;
                                 return Some(PolymarketWsMessage::Reconnected);
                             }
+                            if self.channel == WsChannel::User
+                                && let Some(e) = Self::user_auth_error(&text)
+                            {
+                                self.auth_tracker.fail(e.clone());
+                                log::error!("Polymarket user WebSocket authentication failed: {e}");
+                                continue;
+                            }
+                            if text == "PONG" {
+                                // Polymarket documents no positive user-subscription ACK, a PONG
+                                // following the ordered auth request and probe confirms the quiet
+                                // connection remained alive without a preceding auth error.
+                                self.confirm_user_authentication();
+                                continue;
+                            }
                             let msgs = self.parse_messages(&text);
                             if msgs.is_empty() {
                                 continue;
@@ -388,7 +445,7 @@ impl FeedHandler {
                             // Receiving any user-channel data confirms the server accepted the
                             // credentials; mark auth as successful on the first delivery.
                             if self.channel == WsChannel::User {
-                                self.auth_tracker.succeed();
+                                self.confirm_user_authentication();
                             }
                             // Buffer msgs[1..] so they are returned in order on subsequent
                             // next() calls; returning first directly preserves 0,1,2,...,n order
@@ -405,6 +462,10 @@ impl FeedHandler {
                             }
                         }
                         Message::Close(_) => {
+                            if self.channel == WsChannel::User {
+                                self.auth_tracker
+                                    .fail("User WebSocket closed during authentication");
+                            }
                             log::debug!("WebSocket close frame received");
                             return None;
                         }

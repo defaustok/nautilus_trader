@@ -23,6 +23,7 @@ The following integrations are currently supported:
 | [Kraken](https://kraken.com)                              | `KRAKEN`              | Crypto Exchange (CEX)   | ![status](https://img.shields.io/badge/stable-green) | [Guide](kraken.md)              |
 | [OKX](https://okx.com)                                    | `OKX`                 | Crypto Exchange (CEX)   | ![status](https://img.shields.io/badge/stable-green) | [Guide](okx.md)                 |
 | [Polymarket](https://polymarket.com)                      | `POLYMARKET`          | Prediction Market (DEX) | ![status](https://img.shields.io/badge/stable-green) | [Guide](polymarket.md)          |
+| [Predict.fun](https://predict.fun)                        | `PREDICT_FUN`         | Prediction Market (DEX) | ![status](https://img.shields.io/badge/beta-yellow)  | [Guide](predictfun.md)          |
 | [Tardis](https://tardis.dev)                              | `TARDIS`              | Crypto Data Provider    | ![status](https://img.shields.io/badge/stable-green) | [Guide](tardis.md)              |
 
 - **ID**: The default client ID for the integrations adapter clients.

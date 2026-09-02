@@ -86,6 +86,24 @@ impl PolymarketOrderBuilder {
         }
     }
 
+    /// Returns the EOA address used to produce signatures.
+    #[must_use]
+    pub fn signer_address(&self) -> &str {
+        &self.signer_address
+    }
+
+    /// Returns the maker/funder address carried by signed orders.
+    #[must_use]
+    pub fn maker_address(&self) -> &str {
+        &self.maker_address
+    }
+
+    /// Returns the configured order signature type.
+    #[must_use]
+    pub const fn signature_type(&self) -> SignatureType {
+        self.signature_type
+    }
+
     // Returns a strictly-monotonic millisecond timestamp: the current wall
     // time in ms, or `last_seen + 1` if that would be larger. Thread-safe.
     fn next_timestamp_ms(&self) -> u64 {

@@ -64,6 +64,8 @@ struct TestServerState {
     received_user_auth: Arc<tokio::sync::Mutex<Option<Value>>>,
     drop_next_connection: Arc<AtomicBool>,
     ping_count: Arc<AtomicUsize>,
+    send_user_event: Arc<AtomicBool>,
+    reject_user_auth: Arc<AtomicBool>,
 }
 
 impl Default for TestServerState {
@@ -75,6 +77,8 @@ impl Default for TestServerState {
             received_user_auth: Arc::new(tokio::sync::Mutex::new(None)),
             drop_next_connection: Arc::new(AtomicBool::new(false)),
             ping_count: Arc::new(AtomicUsize::new(0)),
+            send_user_event: Arc::new(AtomicBool::new(true)),
+            reject_user_auth: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -121,6 +125,16 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<TestServerState>, is_us
 
         match msg {
             Message::Text(text) => {
+                if text.as_str() == "PING" {
+                    if socket
+                        .send(Message::Text("PONG".to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
                 let Ok(payload) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };
@@ -129,10 +143,23 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<TestServerState>, is_us
                     if payload.get("type").and_then(Value::as_str) == Some("user") {
                         *state.received_user_auth.lock().await = payload.get("auth").cloned();
 
-                        if socket
-                            .send(Message::Text(user_order_msg.clone().into()))
-                            .await
-                            .is_err()
+                        if state.reject_user_auth.load(Ordering::Relaxed) {
+                            if socket
+                                .send(Message::Text(
+                                    json!({"error": "Unauthorized/Invalid api key"})
+                                        .to_string()
+                                        .into(),
+                                ))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        } else if state.send_user_event.load(Ordering::Relaxed)
+                            && socket
+                                .send(Message::Text(user_order_msg.clone().into()))
+                                .await
+                                .is_err()
                         {
                             break;
                         }
@@ -1047,6 +1074,61 @@ async fn test_is_authenticated_true_after_subscribe_user() {
 
     assert!(client.is_authenticated());
 
+    client.disconnect().await.expect("disconnect failed");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_quiet_user_stream_authenticates_after_ordered_liveness_probe() {
+    let state = Arc::new(TestServerState::default());
+    state.send_user_event.store(false, Ordering::Relaxed);
+    let addr = start_ws_server(state).await;
+    let ws_url = format!("ws://{addr}/ws/user");
+    let mut client = PolymarketWebSocketClient::new_user(
+        Some(ws_url),
+        test_credential(),
+        TransportBackend::default(),
+    );
+    client.connect().await.expect("connect failed");
+    wait_until_active(&client, 2.0).await;
+
+    client
+        .subscribe_user()
+        .await
+        .expect("subscribe_user failed");
+
+    assert!(
+        client.wait_for_authenticated(Duration::from_secs(2)).await,
+        "quiet stream should pass after the post-subscription PONG"
+    );
+    assert!(client.is_authenticated());
+    client.disconnect().await.expect("disconnect failed");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_user_auth_error_fails_closed_even_if_server_later_pongs() {
+    let state = Arc::new(TestServerState::default());
+    state.send_user_event.store(false, Ordering::Relaxed);
+    state.reject_user_auth.store(true, Ordering::Relaxed);
+    let addr = start_ws_server(state).await;
+    let ws_url = format!("ws://{addr}/ws/user");
+    let mut client = PolymarketWebSocketClient::new_user(
+        Some(ws_url),
+        test_credential(),
+        TransportBackend::default(),
+    );
+    client.connect().await.expect("connect failed");
+    wait_until_active(&client, 2.0).await;
+
+    client
+        .subscribe_user()
+        .await
+        .expect("subscribe_user failed");
+
+    assert!(!client.wait_for_authenticated(Duration::from_secs(2)).await);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!client.is_authenticated());
     client.disconnect().await.expect("disconnect failed");
 }
 

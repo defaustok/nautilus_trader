@@ -18,7 +18,8 @@
 //! With `compute_effective_deltas` enabled, book snapshots emit only the net
 //! diff when a maintained local book exists (an empty diff emits nothing).
 //! Incremental `price_change` batches remain wire-faithful and keep that book
-//! current. After an epoch reset, the next snapshot seeds the book unchanged.
+//! current, except stale replay batches which are dropped. After an epoch reset,
+//! the next snapshot seeds the book unchanged.
 //!
 //! Tick-size changes are handled as book epoch transitions: the local order
 //! book is dropped, incremental `price_change` deltas are gated through
@@ -175,6 +176,17 @@ pub(super) fn handle_ws_message(message: PolymarketWsMessage, ctx: &WsMessageCon
                 return;
             }
 
+            // A restored market subscription starts with an initial book dump, but the venue can
+            // replay price changes from before the disconnect first. Do not diff that replay
+            // against retained pre-disconnect state: require a fresh snapshot root instead.
+            let active_delta_subs = ctx.active_delta_subs.load();
+            for instrument_id in active_delta_subs.iter() {
+                ctx.order_books.remove(instrument_id);
+            }
+            ctx.pending_snapshot_after_tick_change.rcu(|pending| {
+                pending.extend(active_delta_subs.iter().copied());
+            });
+
             if !ctx.rtds_feed.needs_connection_recovery() {
                 log::debug!("Skipping RTDS recovery because RTDS connection is still healthy");
                 return;
@@ -224,19 +236,46 @@ fn handle_market_message(message: MarketWsMessage, ctx: &WsMessageContext) {
                     ts_init,
                 ) {
                     Ok(deltas) => {
-                        let emit = if ctx.compute_effective_deltas {
+                        let replay_root_required = ctx
+                            .pending_snapshot_after_tick_change
+                            .contains(&instrument_id);
+                        let emit = if ctx.compute_effective_deltas && replay_root_required {
+                            let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
+                            match book.apply_deltas(&deltas) {
+                                Ok(()) => {
+                                    ctx.order_books.insert(instrument_id, book);
+                                    snapshot_accepted = true;
+                                    Some(deltas)
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "Failed to apply replay-root book snapshot for {instrument_id}: {e}"
+                                    );
+                                    None
+                                }
+                            }
+                        } else if ctx.compute_effective_deltas {
                             match ctx.order_books.entry(instrument_id) {
                                 Entry::Occupied(mut entry) => {
-                                    match apply_snapshot_and_diff(entry.get_mut(), &deltas) {
-                                        Ok(effective) => {
-                                            snapshot_accepted = true;
-                                            effective
-                                        }
-                                        Err(e) => {
-                                            log::error!(
-                                                "Failed to apply book snapshot for {instrument_id}: {e}"
-                                            );
-                                            None
+                                    if deltas.ts_event < entry.get().ts_last {
+                                        log::debug!(
+                                            "Dropping stale book snapshot for {instrument_id}: ts_event {} < {}",
+                                            deltas.ts_event,
+                                            entry.get().ts_last,
+                                        );
+                                        None
+                                    } else {
+                                        match apply_snapshot_and_diff(entry.get_mut(), &deltas) {
+                                            Ok(effective) => {
+                                                snapshot_accepted = true;
+                                                effective
+                                            }
+                                            Err(e) => {
+                                                log::error!(
+                                                    "Failed to apply book snapshot for {instrument_id}: {e}"
+                                                );
+                                                None
+                                            }
                                         }
                                     }
                                 }
@@ -302,7 +341,7 @@ fn handle_market_message(message: MarketWsMessage, ctx: &WsMessageContext) {
             {
                 ctx.pending_snapshot_after_tick_change
                     .remove(&instrument_id);
-                log::debug!("Resumed book for {instrument_id} after tick size change");
+                log::debug!("Resumed book for {instrument_id} after snapshot gate");
             }
         }
 
@@ -379,16 +418,43 @@ fn handle_market_message(message: MarketWsMessage, ctx: &WsMessageContext) {
                         if !parsed.is_empty() {
                             let deltas = OrderBookDeltas::new(instrument_id, parsed);
 
-                            if ctx.compute_effective_deltas
-                                && let Some(mut book) = ctx.order_books.get_mut(&instrument_id)
-                                && let Err(e) = book.apply_deltas(&deltas)
-                            {
-                                log::error!("Failed to apply book deltas for {instrument_id}: {e}");
-                            }
+                            let should_emit = if ctx.compute_effective_deltas {
+                                match ctx.order_books.get_mut(&instrument_id) {
+                                    Some(book) if deltas.ts_event < book.ts_last => {
+                                        log::debug!(
+                                            "Dropping stale book deltas for {instrument_id}: ts_event {} < {}",
+                                            deltas.ts_event,
+                                            book.ts_last,
+                                        );
+                                        false
+                                    }
+                                    Some(mut book) => match book.apply_deltas(&deltas) {
+                                        Ok(()) => true,
+                                        Err(e) => {
+                                            log::error!(
+                                                "Failed to apply book deltas for {instrument_id}: {e}"
+                                            );
+                                            false
+                                        }
+                                    },
+                                    None => {
+                                        log::debug!(
+                                            "Dropping book deltas for {instrument_id}: awaiting initial snapshot",
+                                        );
+                                        ctx.pending_snapshot_after_tick_change
+                                            .insert(instrument_id);
+                                        false
+                                    }
+                                }
+                            } else {
+                                true
+                            };
 
-                            let data: NautilusData = deltas.into();
-                            if let Err(e) = ctx.data_sender.send(DataEvent::Data(data)) {
-                                log::error!("Failed to emit book deltas: {e}");
+                            if should_emit {
+                                let data: NautilusData = deltas.into();
+                                if let Err(e) = ctx.data_sender.send(DataEvent::Data(data)) {
+                                    log::error!("Failed to emit book deltas: {e}");
+                                }
                             }
                         }
                     }
@@ -5815,7 +5881,8 @@ mod tests {
         let asset_id_str = "0xTOKEN2";
         let market = "0xMARKET";
 
-        let (ctx, mut data_rx) = make_ws_ctx();
+        let (mut ctx, mut data_rx) = make_ws_ctx();
+        ctx.compute_effective_deltas = true;
         let inst = seed_instrument(
             &ctx,
             asset_id_str,
@@ -5847,7 +5914,117 @@ mod tests {
             !ctx.pending_snapshot_after_tick_change
                 .contains(&instrument_id)
         );
+        assert!(ctx.order_books.contains_key(&instrument_id));
+        let events: Vec<DataEvent> = std::iter::from_fn(|| data_rx.try_recv().ok()).collect();
+        let snapshot = events.iter().find_map(|event| match event {
+            DataEvent::Data(NautilusData::Deltas(deltas)) => Some(deltas),
+            _ => None,
+        });
+        assert!(
+            snapshot.is_some_and(|deltas| deltas.flags & RecordFlag::F_SNAPSHOT as u8 != 0),
+            "first effective-delta event must remain a replay-root snapshot: {events:?}",
+        );
+    }
+
+    #[rstest]
+    fn reconnect_requires_fresh_snapshot_before_replayed_deltas() {
+        let asset_id_str = "0xTOKEN-RECONNECT";
+        let market = "0xMARKET";
+        let (mut ctx, mut data_rx) = make_ws_ctx();
+        ctx.compute_effective_deltas = true;
+        let instrument = seed_instrument(
+            &ctx,
+            asset_id_str,
+            Price::from("0.01"),
+            Quantity::from("0.01"),
+        );
+        let instrument_id = instrument.id();
+        ctx.active_delta_subs.insert(instrument_id);
+
+        let levels = [("0.45", "5"), ("0.49", "10"), ("0.51", "8"), ("0.55", "12")];
+        handle_market_message(make_snapshot(market, asset_id_str, &levels), &ctx);
+        while data_rx.try_recv().is_ok() {}
+
+        handle_ws_message(PolymarketWsMessage::Reconnected, &ctx);
+
         assert!(!ctx.order_books.contains_key(&instrument_id));
+        assert!(
+            ctx.pending_snapshot_after_tick_change
+                .contains(&instrument_id)
+        );
+
+        let mut replayed = make_price_change(market, asset_id_str, "0.47", "20");
+        let MarketWsMessage::PriceChange(replayed_payload) = &mut replayed else {
+            unreachable!();
+        };
+        replayed_payload.timestamp = "1699999999000".to_string();
+        handle_market_message(replayed, &ctx);
+        assert!(data_rx.try_recv().is_err());
+
+        handle_market_message(make_snapshot(market, asset_id_str, &levels), &ctx);
+
+        assert!(ctx.order_books.contains_key(&instrument_id));
+        assert!(
+            !ctx.pending_snapshot_after_tick_change
+                .contains(&instrument_id)
+        );
+        let batches = collect_delta_batches(&mut data_rx);
+        assert_eq!(batches.len(), 1);
+        assert!(batches[0].flags & RecordFlag::F_SNAPSHOT as u8 != 0);
+    }
+
+    #[rstest]
+    fn stale_book_messages_are_not_applied_or_emitted() {
+        let asset_id_str = "0xTOKEN-STALE";
+        let market = "0xMARKET";
+        let (mut ctx, mut data_rx) = make_ws_ctx();
+        ctx.compute_effective_deltas = true;
+        let instrument = seed_instrument(
+            &ctx,
+            asset_id_str,
+            Price::from("0.01"),
+            Quantity::from("0.01"),
+        );
+        let instrument_id = instrument.id();
+        ctx.active_delta_subs.insert(instrument_id);
+
+        handle_market_message(
+            make_snapshot(
+                market,
+                asset_id_str,
+                &[("0.45", "5"), ("0.49", "10"), ("0.51", "8"), ("0.55", "12")],
+            ),
+            &ctx,
+        );
+        while data_rx.try_recv().is_ok() {}
+        let ts_before = ctx
+            .order_books
+            .get(&instrument_id)
+            .expect("seeded book")
+            .ts_last;
+
+        let mut stale_snapshot = make_snapshot(
+            market,
+            asset_id_str,
+            &[("0.44", "7"), ("0.48", "11"), ("0.52", "9"), ("0.56", "13")],
+        );
+        let MarketWsMessage::Book(stale_snapshot_payload) = &mut stale_snapshot else {
+            unreachable!();
+        };
+        stale_snapshot_payload.timestamp = "1699999999000".to_string();
+        handle_market_message(stale_snapshot, &ctx);
+
+        let mut stale = make_price_change(market, asset_id_str, "0.47", "20");
+        let MarketWsMessage::PriceChange(stale_payload) = &mut stale else {
+            unreachable!();
+        };
+        stale_payload.timestamp = "1699999999000".to_string();
+        handle_market_message(stale, &ctx);
+
+        assert!(data_rx.try_recv().is_err());
+        let book = ctx.order_books.get(&instrument_id).expect("retained book");
+        assert_eq!(book.ts_last, ts_before);
+        assert_eq!(book.best_bid_price(), Some(Price::from("0.49")));
     }
 
     #[rstest]

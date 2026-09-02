@@ -15,6 +15,9 @@
 
 //! Live execution client implementation for the Polymarket adapter.
 
+pub mod agent;
+pub mod agent_lifecycle;
+pub mod ctf_relayer;
 pub mod order_builder;
 pub mod parse;
 

@@ -30,7 +30,7 @@ use nautilus_core::{UnixNanos, datetime::get_timezone};
 use nautilus_model::{
     data::{
         Bar, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate,
-        OptionGreeks, OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick,
+        OptionGreeks, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
         close::InstrumentClose,
     },
     events::{
@@ -309,6 +309,14 @@ impl PyStreamingFeatherWriter {
             return runtime
                 .block_on(async { writer.write_data(Data::Bar(bar)).await })
                 .map_err(|e| PyIOError::new_err(format!("Failed to write Bar: {e}")));
+        }
+
+        if let Ok(deltas) = data.extract::<OrderBookDeltas>(py) {
+            let mut writer = self.writer.borrow_mut();
+            let runtime = get_runtime();
+            return runtime
+                .block_on(async { writer.write_data(Data::Deltas(Box::new(deltas))).await })
+                .map_err(|e| PyIOError::new_err(format!("Failed to write OrderBookDeltas: {e}")));
         }
 
         if let Ok(delta) = data.extract::<OrderBookDelta>(py) {

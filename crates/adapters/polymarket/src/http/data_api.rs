@@ -35,7 +35,7 @@ use crate::{
     common::enums::PolymarketOrderSide,
     http::{
         error::{Error, Result},
-        models::{DataApiPosition, DataApiTrade},
+        models::{DataApiActivity, DataApiPosition, DataApiTrade},
         pagination::{
             CollectAll, Completion, FetchOutcome, OffsetProtocol, PageFingerprint, PageReducer,
             Paginator, encode_length_prefixed, fingerprint_multiset,
@@ -322,6 +322,40 @@ impl PolymarketDataApiHttpClient {
             Completion::WireExhausted => Ok(completed.output),
             Completion::Stopped(never) => match never {},
         }
+    }
+
+    /// Fetches the most recent account activity used to reconcile completed redemptions.
+    pub async fn get_activity(
+        &self,
+        user_address: &str,
+        limit: usize,
+    ) -> Result<Vec<DataApiActivity>> {
+        let limit = limit.clamp(1, 500);
+        let params = vec![
+            ("user".to_string(), user_address.to_string()),
+            ("limit".to_string(), limit.to_string()),
+            ("offset".to_string(), "0".to_string()),
+        ];
+        let response = self
+            .client
+            .request_with_params(
+                Method::GET,
+                format!("{}/activity", self.base_url),
+                Some(&params),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(Error::from_http_client)?;
+        if !response.status.is_success() {
+            return Err(Error::from_status_code(
+                response.status.as_u16(),
+                &response.body,
+            ));
+        }
+        serde_json::from_slice(&response.body).map_err(Error::Serde)
     }
 
     /// Fetches trades from the Data API for the given condition ID.
@@ -680,6 +714,20 @@ mod tests {
             condition_id: "0xabc".to_string(),
             size: dec!(10),
             avg_price: None,
+            initial_value: None,
+            current_value: None,
+            cash_pnl: None,
+            percent_pnl: None,
+            total_bought: None,
+            realized_pnl: None,
+            cur_price: None,
+            redeemable: false,
+            mergeable: false,
+            title: None,
+            slug: None,
+            event_slug: None,
+            outcome: None,
+            end_date: None,
         }];
         let account_id = AccountId::from("POLYMARKET-001");
         let ts_now = nautilus_core::UnixNanos::from(1_000_000_000u64);

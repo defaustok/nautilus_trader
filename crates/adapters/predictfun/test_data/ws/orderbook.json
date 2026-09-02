@@ -1,0 +1,21 @@
+{
+  "type": "M",
+  "topic": "predictOrderbook/123",
+  "data": {
+    "version": 1,
+    "marketId": 123,
+    "updateTimestampMs": 1736696400000,
+    "orderCount": 42,
+    "asks": [[0.62, 1500.0], [0.63, 800.0]],
+    "bids": [[0.61, 2000.0], [0.60, 1200.0]],
+    "lastOrderSettled": {
+      "id": "987654321",
+      "price": "0.62",
+      "kind": "LIMIT",
+      "marketId": 123,
+      "side": "Ask",
+      "outcome": "Yes"
+    },
+    "settlementsPending": { "asks": [[0.62, 310.0]], "bids": [] }
+  }
+}

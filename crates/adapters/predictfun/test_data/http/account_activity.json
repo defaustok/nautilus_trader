@@ -1,0 +1,31 @@
+{
+  "success": true,
+  "cursor": null,
+  "data": [
+    {
+      "name": "MATCH",
+      "createdAt": "2026-01-02T03:04:05.678Z",
+      "transactionHash": "0xtransaction",
+      "amountFilled": "2.5",
+      "priceExecuted": "0.42",
+      "order": {
+        "quoteType": "Bid",
+        "amount": "2.5",
+        "price": "0.42",
+        "fee": {
+          "amount": "0.01",
+          "type": "COLLATERAL"
+        }
+      },
+      "market": {
+        "id": 42
+      },
+      "outcome": {
+        "name": "Yes",
+        "indexSet": 1,
+        "onChainId": "123",
+        "status": null
+      }
+    }
+  ]
+}

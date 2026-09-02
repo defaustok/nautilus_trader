@@ -476,13 +476,71 @@ pub struct ClobMarketResponse {
 
 /// A position from the Polymarket Data API `GET /positions` endpoint.
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DataApiPosition {
     pub asset: String,
-    #[serde(alias = "conditionId", alias = "condition_id")]
+    #[serde(alias = "condition_id")]
     pub condition_id: String,
     pub size: Decimal,
-    #[serde(alias = "avgPrice", alias = "avg_price")]
+    #[serde(alias = "avg_price")]
     pub avg_price: Option<Decimal>,
+    #[serde(default)]
+    pub initial_value: Option<Decimal>,
+    #[serde(default)]
+    pub current_value: Option<Decimal>,
+    #[serde(default)]
+    pub cash_pnl: Option<Decimal>,
+    #[serde(default)]
+    pub percent_pnl: Option<Decimal>,
+    #[serde(default)]
+    pub total_bought: Option<Decimal>,
+    #[serde(default)]
+    pub realized_pnl: Option<Decimal>,
+    #[serde(default, alias = "currentPrice")]
+    pub cur_price: Option<Decimal>,
+    #[serde(default)]
+    pub redeemable: bool,
+    #[serde(default)]
+    pub mergeable: bool,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub event_slug: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub end_date: Option<String>,
+}
+
+/// An account activity row from the Polymarket Data API `GET /activity` endpoint.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataApiActivity {
+    #[serde(rename = "type")]
+    pub activity_type: String,
+    #[serde(default)]
+    pub asset: String,
+    pub condition_id: String,
+    #[serde(deserialize_with = "deserialize_decimal_from_json_number")]
+    pub size: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_from_json_number")]
+    pub usdc_size: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_from_json_number")]
+    pub price: Decimal,
+    pub timestamp: i64,
+    #[serde(default)]
+    pub outcome_index: Option<i64>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub event_slug: Option<String>,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    pub transaction_hash: String,
 }
 
 /// A trade from the Polymarket Data API `GET /trades` endpoint.
@@ -1176,6 +1234,15 @@ mod tests {
         );
         assert_eq!(positions[0].size, dec!(150.5));
         assert_eq!(positions[0].avg_price, Some(dec!(0.55)));
+        assert_eq!(positions[0].initial_value, Some(dec!(82.775)));
+        assert_eq!(positions[0].current_value, Some(dec!(90.3)));
+        assert_eq!(positions[0].cash_pnl, Some(dec!(7.525)));
+        assert_eq!(positions[0].percent_pnl, Some(dec!(9.09)));
+        assert_eq!(positions[0].realized_pnl, Some(dec!(0)));
+        assert_eq!(positions[0].cur_price, Some(dec!(0.6)));
+        assert_eq!(positions[0].title.as_deref(), Some("Will BTC hit $100k?"));
+        assert_eq!(positions[0].outcome.as_deref(), Some("Yes"));
+        assert!(!positions[0].redeemable);
 
         // Zero-size position
         assert_eq!(positions[1].size, dec!(0));
@@ -1188,6 +1255,7 @@ mod tests {
         );
         assert_eq!(positions[2].size, dec!(42));
         assert_eq!(positions[2].avg_price, Some(dec!(0.3)));
+        assert!(positions[2].redeemable);
 
         // Dust position (below DUST_POSITION_THRESHOLD)
         assert_eq!(positions[3].size, dec!(0.005));

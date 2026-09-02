@@ -238,7 +238,7 @@ impl OrderSubmitter {
                         result
                     }
                 },
-                |e| e.is_retryable(),
+                is_safe_submit_retry,
                 Error::retry_after,
                 |e| submit_retry_error(e, &saw_unknown_outcome),
             )
@@ -467,7 +467,7 @@ impl OrderSubmitter {
                         result
                     }
                 },
-                |e| e.is_retryable(),
+                is_safe_submit_retry,
                 Error::retry_after,
                 |e| submit_retry_error(e, &saw_unknown_outcome),
             )
@@ -527,6 +527,10 @@ impl OrderSubmitter {
 
 fn submit_outcome_is_unknown(error: &Error, earlier_attempt_unknown: bool) -> bool {
     error.is_submit_outcome_unknown() || earlier_attempt_unknown
+}
+
+fn is_safe_submit_retry(error: &Error) -> bool {
+    error.is_retryable() && !error.is_submit_outcome_unknown()
 }
 
 pub(super) fn submit_response_outcome(
@@ -680,6 +684,29 @@ mod tests {
             false
         ));
         assert!(submit_outcome_is_unknown(&Error::Timeout, false));
+    }
+
+    #[rstest]
+    #[case::signer_rate_limit(
+        Error::RateLimit {
+            endpoint: "/order",
+            token_cost: 1,
+            retry_after_ms: Some(2_000),
+            message: "rate limit exceeded".to_string(),
+            signer_limited: true,
+        },
+        true
+    )]
+    #[case::bare_rate_limit(Error::rate_limit("/order", 1, Some(2_000)), false)]
+    #[case::timeout(Error::Timeout, false)]
+    #[case::transport(Error::transport("connection reset"), false)]
+    #[case::server_error(Error::http(500, "server error"), false)]
+    #[case::bad_request(Error::bad_request("invalid order"), false)]
+    fn test_submit_retry_never_retries_ambiguous_outcome(
+        #[case] error: Error,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(is_safe_submit_retry(&error), expected);
     }
 
     #[rstest]

@@ -355,9 +355,15 @@ impl PolymarketDataClient {
     fn add_delta_subscription_intent(&self, instrument_id: InstrumentId) -> bool {
         self.add_live_subscription_intent_with_state(instrument_id, &self.active_delta_subs, || {
             if self.config.compute_effective_deltas {
-                self.order_books
-                    .entry(instrument_id)
-                    .or_insert_with(|| OrderBook::new(instrument_id, BookType::L2_MBP));
+                // A quote subscription may already have populated local book state. A new
+                // delta subscriber still requires its own replay root, so gate incrementals and
+                // reset the diff baseline until the next validated venue snapshot is emitted.
+                self.order_books.insert(
+                    instrument_id,
+                    OrderBook::new(instrument_id, BookType::L2_MBP),
+                );
+                self.pending_snapshot_after_tick_change
+                    .insert(instrument_id);
             }
         })
     }

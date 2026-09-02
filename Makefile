@@ -264,6 +264,7 @@ ADAPTER_CRATES := nautilus-architect-ax nautilus-betfair nautilus-binance \
     nautilus-coinbase nautilus-databento nautilus-deribit nautilus-derive \
     nautilus-dydx nautilus-hyperliquid nautilus-interactive-brokers \
     nautilus-kraken nautilus-lighter nautilus-okx nautilus-polymarket \
+    nautilus-predictfun \
     nautilus-sandbox nautilus-tardis
 
 # Workspace members without Rust test functions:

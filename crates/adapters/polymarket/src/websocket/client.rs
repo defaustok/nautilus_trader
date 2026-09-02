@@ -470,6 +470,13 @@ impl PolymarketWebSocketClient {
         self.auth_tracker.is_authenticated()
     }
 
+    /// Waits for the current user subscription authentication barrier.
+    ///
+    /// Returns `false` on timeout or a definitive authentication failure.
+    pub async fn wait_for_authenticated(&self, timeout: std::time::Duration) -> bool {
+        self.auth_tracker.wait_for_authenticated(timeout).await
+    }
+
     /// Subscribe to market data for the given asset IDs.
     ///
     /// Sends a subscribe message immediately if connected; the IDs are also

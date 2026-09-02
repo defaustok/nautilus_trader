@@ -1,0 +1,109 @@
+[package]
+name = "nautilus-predictfun"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "PredictFun integration adapter for the Nautilus trading engine"
+categories.workspace = true
+keywords.workspace = true
+documentation.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "nautilus_predictfun"
+crate-type = ["rlib"]
+
+[features]
+default = ["high-precision"]
+examples = ["nautilus-live/node"]
+extension-module = [
+  "nautilus-common/extension-module",
+  "nautilus-core/extension-module",
+  "nautilus-live/extension-module",
+  "nautilus-model/extension-module",
+  "nautilus-network/extension-module",
+  "pyo3/extension-module",
+  "python",
+]
+python = [
+  "dep:nautilus-system",
+  "nautilus-common/python",
+  "nautilus-core/python",
+  "nautilus-live/python",
+  "nautilus-model/python",
+  "nautilus-network/python",
+  "nautilus-system/python",
+  "pyo3",
+  "pyo3-stub-gen",
+]
+high-precision = ["nautilus-model/high-precision"]
+
+[dependencies]
+nautilus-common = { workspace = true, features = ["live"] }
+nautilus-core = { workspace = true }
+nautilus-live = { workspace = true }
+nautilus-model = { workspace = true }
+nautilus-network = { workspace = true }
+nautilus-system = { workspace = true, optional = true }
+
+alloy = { workspace = true, features = ["provider-http", "network", "reqwest"] }
+alloy-primitives = { workspace = true }
+anyhow = { workspace = true }
+ahash = { workspace = true }
+async-trait = { workspace = true }
+bon = { workspace = true }
+jiff = { workspace = true }
+log = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_repr = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-util = { workspace = true }
+ustr = { workspace = true }
+zeroize = { workspace = true }
+
+pyo3 = { workspace = true, optional = true }
+pyo3-stub-gen = { workspace = true, optional = true }
+
+[dev-dependencies]
+nautilus-testkit = { workspace = true, default-features = false, features = ["testers"] }
+nautilus-trading = { workspace = true }
+
+dotenvy = { workspace = true }
+rstest = { workspace = true }
+rust_decimal_macros = { workspace = true }
+
+[[example]]
+name = "predictfun-data-tester"
+path = "examples/node_data_tester.rs"
+required-features = ["examples"]
+doc = false
+
+[[example]]
+name = "predictfun-exec-tester"
+path = "examples/node_exec_tester.rs"
+required-features = ["examples"]
+doc = false
+
+[[example]]
+name = "predictfun-testnet-probe"
+path = "examples/testnet_probe.rs"
+doc = false
+
+[[example]]
+name = "predictfun-testnet-exec-probe"
+path = "examples/testnet_exec_probe.rs"
+doc = false

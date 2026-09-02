@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "cursor": null,
+  "data": [
+    {
+      "market": { "id": 42, "title": "BTC Up or Down" },
+      "taker": {
+        "quoteType": "Bid",
+        "amount": "10",
+        "price": "0.40",
+        "outcome": { "name": "YES", "indexSet": 1, "onChainId": "123", "status": "OPEN" },
+        "signer": "0x0000000000000000000000000000000000000001",
+        "hash": "0xtaker",
+        "fee": { "amount": "0.02", "type": "COLLATERAL" }
+      },
+      "amountFilled": "10",
+      "priceExecuted": "0.40",
+      "makers": [
+        {
+          "quoteType": "Ask",
+          "amount": "10",
+          "price": "0.40",
+          "outcome": { "name": "YES", "indexSet": 1, "onChainId": "123", "status": "OPEN" },
+          "signer": "0x0000000000000000000000000000000000000002",
+          "hash": "0xmaker",
+          "fee": { "amount": "0", "type": "COLLATERAL" }
+        }
+      ],
+      "transactionHash": "0xtx",
+      "settlementId": "settlement-1",
+      "executedAt": "2026-04-07T00:37:05Z"
+    }
+  ]
+}

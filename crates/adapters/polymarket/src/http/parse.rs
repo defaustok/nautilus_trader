@@ -331,6 +331,19 @@ fn build_info_json(def: &PolymarketInstrumentDef) -> serde_json::Value {
         "market_id".to_string(),
         serde_json::Value::String(def.market_id.clone()),
     );
+    map.insert("active".to_string(), serde_json::Value::Bool(def.active));
+    map.insert("closed".to_string(), serde_json::Value::Bool(def.closed));
+    let trading_status = if def.active {
+        "OPEN"
+    } else if def.closed {
+        "CLOSED"
+    } else {
+        "MATCHING_NOT_ENABLED"
+    };
+    map.insert(
+        "trading_status".to_string(),
+        serde_json::Value::String(trading_status.to_string()),
+    );
 
     if let Some(qid) = &def.question_id {
         map.insert(
@@ -639,6 +652,9 @@ mod tests {
         );
         assert_eq!(info.get_str("game_id"), None);
         assert_eq!(info.get_str("min_order_size"), Some("5"));
+        assert_eq!(info.get_bool("active"), Some(true));
+        assert_eq!(info.get_bool("closed"), Some(false));
+        assert_eq!(info.get_str("trading_status"), Some("OPEN"));
         assert_eq!(info.get_bool("neg_risk"), Some(false));
         assert_eq!(info.get("fee_schedule"), None);
     }
@@ -660,7 +676,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_past_end_market_carries_closure_state_on_the_definition_only() {
+    fn test_past_end_market_carries_normalized_trading_status() {
         let mut market = load_gamma_market("gamma_market_past_end_date_open.json");
         let defs = parse_gamma_market(&market).unwrap();
 
@@ -671,9 +687,14 @@ mod tests {
 
         assert!(closed_defs[0].closed);
 
-        // `create_instrument_from_def` is shared with the historical loader, which keeps terminal
-        // state in `resolution_metadata`. Closure is stamped on the live Gamma path instead.
-        for def in [&defs[0], &closed_defs[0]] {
+        let mut paused_def = defs[0].clone();
+        paused_def.active = false;
+
+        for (def, expected_active, expected_closed, expected_status) in [
+            (&defs[0], true, false, "OPEN"),
+            (&paused_def, false, false, "MATCHING_NOT_ENABLED"),
+            (&closed_defs[0], false, true, "CLOSED"),
+        ] {
             let instrument =
                 create_instrument_from_def(def, UnixNanos::from(1_000_000_000u64)).unwrap();
             let binary = match &instrument {
@@ -682,7 +703,9 @@ mod tests {
             };
             let info = binary.info.as_ref().expect("info should be present");
 
-            assert_eq!(info.get_bool("closed"), None);
+            assert_eq!(info.get_bool("active"), Some(expected_active));
+            assert_eq!(info.get_bool("closed"), Some(expected_closed));
+            assert_eq!(info.get_str("trading_status"), Some(expected_status));
         }
     }
 

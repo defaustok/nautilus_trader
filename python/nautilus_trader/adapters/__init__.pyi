@@ -17,6 +17,7 @@ from . import kraken
 from . import lighter
 from . import okx
 from . import polymarket
+from . import predictfun
 from . import sandbox
 from . import tardis
 
@@ -38,6 +39,7 @@ __all__ = [
     "lighter",
     "okx",
     "polymarket",
+    "predictfun",
     "sandbox",
     "tardis",
 ]
