@@ -144,10 +144,11 @@ impl PredictFunWebSocketClient {
             reconnect_backoff_factor: Some(2.0),
             reconnect_jitter_ms: Some(250),
             reconnect_max_attempts: None,
-            heartbeat_timeout_secs: None,
-            // An authenticated wallet topic can legitimately be quiet for longer than 45 seconds.
-            // TCP/WebSocket closure still drives reconnect; silence alone must not revoke trading
-            // readiness.
+            // Predict sends a server heartbeat every 15 seconds. Three missed probes indicate a
+            // silent transport and must drive the shared client's reconnect path.
+            heartbeat_timeout_secs: Some(45),
+            // An authenticated wallet topic can legitimately be quiet, so do not use application
+            // data idleness as a liveness signal. Server heartbeat frames refresh the timeout above.
             idle_timeout_ms: None,
             backend: self.backend,
             proxy_url: None,
@@ -228,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn server_driven_heartbeat_has_no_unsolicited_client_ping() {
+    fn server_driven_heartbeat_has_dead_peer_timeout_without_unsolicited_client_ping() {
         let client = PredictFunWebSocketClient::new(
             "wss://example.test/ws",
             Some(SecretString::new("api-secret".to_string()).unwrap()),
@@ -238,5 +239,6 @@ mod tests {
         let config = client.websocket_config();
         assert_eq!(config.heartbeat_interval_secs, None);
         assert_eq!(config.heartbeat_payload, None);
+        assert_eq!(config.heartbeat_timeout_secs, Some(45));
     }
 }
