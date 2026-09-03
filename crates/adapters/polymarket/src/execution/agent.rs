@@ -608,11 +608,38 @@ impl PolymarketAgentFacade {
         request: MarketableSharesOrderRequest,
         preflight: MarketableOrderPreflight,
     ) -> Result<PreparedMarketableOrder, PrepareMarketableOrderError> {
-        // Immediate limit orders keep both sides share-denominated. A quote-denominated market BUY
-        // spends its fixed cash amount at the improved fill price and can exceed target shares.
-        let order = self
-            .order_builder
-            .build_limit_order(
+        // A marketable BUY limit signs `shares * protected_price` as fixed maker collateral. The
+        // CLOB spends that collateral at any price improvement, so a 5-share request can fill more
+        // than 5 shares. Use the exact fresh-book cost and marginal crossing price instead. This is
+        // exact for the preflight revision; later book motion remains visible as a residual fill.
+        let order = match request.side {
+            PolymarketOrderSide::Buy => {
+                let quote = preflight.buy_quote_amount.ok_or_else(|| {
+                    PrepareMarketableOrderError::Preflight(
+                        "BUY preflight is missing exact quote collateral".to_string(),
+                    )
+                })?;
+                let crossing = preflight.buy_crossing_price.ok_or_else(|| {
+                    PrepareMarketableOrderError::Preflight(
+                        "BUY preflight is missing a marginal crossing price".to_string(),
+                    )
+                })?;
+                if quote.trunc_with_scale(LOT_SIZE_SCALE) != quote {
+                    return Err(PrepareMarketableOrderError::Build(format!(
+                        "exact BUY quote amount {} pUSD exceeds venue precision",
+                        quote.normalize()
+                    )));
+                }
+                self.order_builder.build_market_order(
+                    &request.token_id,
+                    request.side,
+                    crossing,
+                    quote,
+                    request.neg_risk,
+                    preflight.tick_size.scale(),
+                )
+            }
+            PolymarketOrderSide::Sell => self.order_builder.build_limit_order(
                 &request.token_id,
                 request.side,
                 request.protected_price,
@@ -621,8 +648,9 @@ impl PolymarketAgentFacade {
                 "0",
                 request.neg_risk,
                 preflight.tick_size.scale(),
-            )
-            .map_err(|error| PrepareMarketableOrderError::Build(error.to_string()))?;
+            ),
+        }
+        .map_err(|error| PrepareMarketableOrderError::Build(error.to_string()))?;
         if order.signature_type != SignatureType::Poly1271 {
             return Err(PrepareMarketableOrderError::SignatureTypeNotDepositWallet);
         }
@@ -1011,8 +1039,7 @@ fn validate_preflight(
         }
         PolymarketOrderSide::Sell => (None, None),
     };
-    let signed_buy_notional =
-        request.shares.trunc_with_scale(LOT_SIZE_SCALE) * request.protected_price;
+    let signed_buy_notional = buy_quote_amount.unwrap_or(Decimal::ZERO);
     if request.side == PolymarketOrderSide::Buy
         && signed_buy_notional < MARKETABLE_BUY_MINIMUM_NOTIONAL
     {
@@ -1024,7 +1051,7 @@ fn validate_preflight(
 
     let available_balance = balance_allowance.balance / Decimal::from(1_000_000u32);
     let required_balance = match request.side {
-        PolymarketOrderSide::Buy => request.protected_price * request.shares,
+        PolymarketOrderSide::Buy => signed_buy_notional,
         PolymarketOrderSide::Sell => request.shares,
     };
     if available_balance < required_balance {
@@ -1428,11 +1455,11 @@ mod tests {
         assert_eq!(prepared.shares(), dec!(5));
         assert_eq!(prepared.signature_type(), SignatureType::Poly1271);
         assert_eq!(prepared.order.taker_amount, dec!(5_000_000));
-        assert_eq!(prepared.order.maker_amount, dec!(2_500_000));
+        assert_eq!(prepared.order.maker_amount, dec!(2_450_000));
     }
 
     #[rstest]
-    fn protected_buy_is_share_denominated_at_the_limit_price() {
+    fn protected_buy_uses_exact_fresh_book_cost() {
         let facade = make_facade();
         let mut request = five_share_request();
         request.protected_price = dec!(0.99);
@@ -1448,15 +1475,17 @@ mod tests {
 
         let prepared = facade.sign_preflighted_order(request, preflight).unwrap();
 
-        assert_eq!(prepared.order.maker_amount, dec!(4_950_000));
+        assert_eq!(prepared.order.maker_amount, dec!(2_800_000));
         assert_eq!(prepared.order.taker_amount, dec!(5_000_000));
     }
 
     #[rstest]
-    fn protected_buy_fails_closed_when_signed_maker_amount_exceeds_precision() {
+    fn protected_buy_fails_closed_when_exact_book_cost_exceeds_precision() {
         let facade = make_facade();
         let mut preflight = passing_preflight();
         preflight.tick_size = dec!(0.001);
+        preflight.buy_quote_amount = Some(dec!(2.055));
+        preflight.buy_crossing_price = Some(dec!(0.411));
         let mut request = five_share_request();
         request.protected_price = dec!(0.411);
 
@@ -1464,7 +1493,11 @@ mod tests {
             .sign_preflighted_order(request, preflight)
             .unwrap_err();
 
-        assert!(error.to_string().contains("BUY maker amount 2.055 pUSD"));
+        assert!(
+            error
+                .to_string()
+                .contains("exact BUY quote amount 2.055 pUSD exceeds venue precision")
+        );
     }
 
     #[rstest]
@@ -1520,10 +1553,10 @@ mod tests {
     #[case::insufficient_balance(
         market(dec!(5)),
         book("0.49", "10"),
-        balance("2499999", "10000000"),
+        balance("2449999", "10000000"),
         PrepareMarketableOrderError::InsufficientBalance {
-            required: dec!(2.50),
-            available: dec!(2.499999),
+            required: dec!(2.45),
+            available: dec!(2.449999),
         }
     )]
     #[case::missing_allowance(
@@ -1615,7 +1648,7 @@ mod tests {
     }
 
     #[rstest]
-    fn live_price_improvement_cannot_increase_target_shares() {
+    fn fresh_book_cost_targets_exact_shares_before_later_book_motion() {
         let facade = make_facade();
         let mut request = five_share_request();
         request.protected_price = dec!(0.41);
@@ -1631,9 +1664,9 @@ mod tests {
 
         let prepared = facade.sign_preflighted_order(request, preflight).unwrap();
 
-        // The former 2.05 pUSD market BUY received 5.125 shares at 0.40. A limit BUY signs an
-        // exact five-share taker amount while preserving the 0.41 protection ceiling.
-        assert_eq!(prepared.order.maker_amount, dec!(2_050_000));
+        // Signing the 2.00 pUSD fresh-book cost targets five shares at 0.40 instead of spending
+        // `protected_price * shares` (2.05 pUSD) and deterministically overfilling to 5.125.
+        assert_eq!(prepared.order.maker_amount, dec!(2_000_000));
         assert_eq!(prepared.order.taker_amount, dec!(5_000_000));
         assert_eq!(prepared.shares(), dec!(5));
         assert_eq!(prepared.time_in_force, PolymarketOrderType::FAK);
@@ -1665,7 +1698,7 @@ mod tests {
         let prepared = facade
             .sign_preflighted_order(request, preflight)
             .expect("sign with live tick precision");
-        assert_eq!(prepared.order.maker_amount, dec!(5_020_000));
+        assert_eq!(prepared.order.maker_amount, dec!(5_010_000));
         assert_eq!(prepared.order.taker_amount, dec!(10_000_000));
     }
 
